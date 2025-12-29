@@ -78,7 +78,18 @@ def get_prediction_interval(pred_value, q1, q3):
     max_time = pred_value + margin
     
     return min_time, max_time, segment_name, color
-
+    
+def ops_recommendation(pred_value, q3_threshold):
+    """
+    Provides operational suggestions based on predicted time.
+    """
+    if pred_value > q3_threshold:
+        return "⚠️ High Delay Risk: Assign top-rated courier and prioritize route optimization."
+    elif pred_value > 25: # Arbitrary threshold for 'normal'
+        return "ℹ️ Normal Operation: Standard dispatch procedure."
+    else:
+        return "✅ Fast Delivery: Opportunity to bundle with other nearby orders."
+        
 def build_input_encoded(features, distance, prep, exp, traffic, weather):
     """
     Build 1-row dataframe with OHE columns matching `features`.
@@ -174,7 +185,7 @@ with colA:
             pred_val = float(model.predict(input_df_model)[0])
             
             # 3. Calculate Interval (Range) based on Segments
-            min_t, max_t, seg_name, color_code = get_prediction_interval(pred_val, Q1, Q3)
+            min_t, max_t, seg_name, color_code = get_prediction_interval(pred_val, q1, q3)
 
             # 4. Display Metrics
             m1, m2, m3 = st.columns(3)
@@ -192,7 +203,7 @@ with colA:
 
             st.markdown("---")
             st.markdown("### 📢 Operational Action")
-            st.write(ops_recommendation(pred_val, Q3))
+            st.write(ops_recommendation(pred_val, q3))
 
             # Debugging Inputs
             with st.expander("Show Detailed Input Data"):
