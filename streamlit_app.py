@@ -227,4 +227,4 @@ with colA:
             st.dataframe(input_df_model, use_container_width=True)
 
     else:
-        st.write("👈 Adjust inputs on the sidebar and click **Predict Delivery Time**.")
+        st.info("Fill the inputs on the sidebar and click **Predict Delivery Time**.")
