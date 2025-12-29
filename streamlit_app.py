@@ -151,9 +151,9 @@ colA, colB = st.columns([2, 1])
 with colB:
     st.info(f"""
     **Segment Thresholds:**
-    - Fast: ≤ {Q1:.0f} min
-    - Normal: {Q1:.0f} - {Q3:.0f} min
-    - Long: > {Q3:.0f} min
+    - Fast: ≤ {q1:.0f} min
+    - Normal: {q1:.0f} - {q3:.0f} min
+    - Long: > {q3:.0f} min
     """)
     
     with st.expander("Model Debug Info"):
