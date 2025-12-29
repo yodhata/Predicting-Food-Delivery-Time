@@ -49,23 +49,35 @@ if isinstance(iqr, dict) and ("q1" in iqr) and ("q3" in iqr):
 else:
     q1, q3 = 41.0, 71.0
 
+RMSE_SHORT  = 3.9   # RMSE untuk prediksi <= 41 menit
+RMSE_MEDIUM = 7.6   # RMSE untuk prediksi 41 - 71 menit
+RMSE_LONG   = 14.2  # RMSE untuk prediksi > 71 menit
+
 # ======================
 # Helpers
 # ======================
-def segment_label(pred, q1, q3):
-    if pred <= q1:
-        return f"Fast (≤ {q1:.1f} min)"
-    elif pred <= q3:
-        return f"Normal ({q1:.1f}–{q3:.1f} min)"
-    return f"Long Risk (> {q3:.1f} min)"
-
-def ops_recommendation(pred, q3):
-    if pred <= q3:
-        return "Standard monitoring is sufficient."
-    return (
-        "Long-risk order: assign a closer courier, avoid adding extra orders "
-        "(limit batching), and send proactive delivery-time updates."
-    )
+def get_prediction_interval(pred_value, q1, q3):
+    """
+    Menentukan rentang waktu (min-max) berdasarkan segmen error model.
+    """
+    if pred_value <= q1:
+        margin = RMSE_SHORT
+        segment_name = "Short Duration (High Accuracy)"
+        color = "green"
+    elif pred_value <= q3:
+        margin = RMSE_MEDIUM
+        segment_name = "Medium Duration (Moderate Accuracy)"
+        color = "orange"
+    else:
+        margin = RMSE_LONG
+        segment_name = "Long Duration (Low Accuracy)"
+        color = "red"
+    
+    # Hitung batas bawah (tidak boleh negatif) dan batas atas
+    min_time = max(0, pred_value - margin)
+    max_time = pred_value + margin
+    
+    return min_time, max_time, segment_name, color
 
 def build_input_encoded(features, distance, prep, exp, traffic, weather):
     """
@@ -129,7 +141,7 @@ exp = st.sidebar.number_input("Courier Experience (years)", min_value=0.0, value
 traffic = st.sidebar.selectbox("Traffic Level", ["Low", "Medium", "High"], index=1)
 weather = st.sidebar.selectbox("Weather", ["Clear", "Rainy", "Foggy", "Snowy", "Windy"], index=0)
 
-predict_btn = st.sidebar.button("Predict Delivery Time")
+predict_btn = st.sidebar.button("Predict Delivery Time", type="primary")
 
 # ======================
 # Main layout
@@ -137,46 +149,56 @@ predict_btn = st.sidebar.button("Predict Delivery Time")
 colA, colB = st.columns([2, 1])
 
 with colB:
-    st.subheader("IQR Reference (Segments)")
-    st.write(f"Q1: **{q1:.1f} min**")
-    st.write(f"Q3: **{q3:.1f} min**")
-
-    st.subheader("Model Info")
-    st.write(f"Total features: **{len(features)}**")
-    st.write(f"Scaler saved: **{'Yes' if scaler is not None else 'No'}**")
-    st.write(f"Scaled columns: **{scale_cols if scale_cols else 'None'}**")
+    st.info(f"""
+    **Segment Thresholds:**
+    - Fast: ≤ {Q1:.0f} min
+    - Normal: {Q1:.0f} - {Q3:.0f} min
+    - Long: > {Q3:.0f} min
+    """)
+    
+    with st.expander("Model Debug Info"):
+        st.write(f"Features: {len(features)}")
+        st.write(f"Scaler: {'Loaded' if scaler else 'Missing'}")
+        st.write(f"Scale Cols: {scale_cols}")
 
 with colA:
-    st.subheader("Prediction")
+    st.subheader("Prediction Result")
 
-    # 1) encoded input (OHE)
+    # 1. Build & Scale Input
     input_df = build_input_encoded(features, distance, prep, exp, traffic, weather)
-
-    # 2) apply scaling (pakai scaler artifact)
     input_df_model = apply_scaling_if_needed(input_df, scaler, scale_cols)
 
     if predict_btn:
         try:
-            pred = float(model.predict(input_df_model)[0])
+            # 2. Predict
+            pred_val = float(model.predict(input_df_model)[0])
+            
+            # 3. Calculate Interval (Range) based on Segments
+            min_t, max_t, seg_name, color_code = get_prediction_interval(pred_val, Q1, Q3)
+
+            # 4. Display Metrics
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Exact Prediction", f"{pred_val:.1f} min")
+            m2.metric("Estimated Range", f"{min_t:.0f} - {max_t:.0f} min")
+            m3.metric("Segment Type", seg_name.split('(')[0].strip()) # Ambil nama depannya aja
+
+            # 5. Visual Feedback
+            if color_code == "green":
+                st.success(f"Prediction is likely highly accurate (Segment: {seg_name})")
+            elif color_code == "orange":
+                st.warning(f"Prediction has moderate variance (Segment: {seg_name})")
+            else:
+                st.error(f"Prediction is a rough estimate due to high variance (Segment: {seg_name})")
+
+            st.markdown("---")
+            st.markdown("### 📢 Operational Action")
+            st.write(ops_recommendation(pred_val, Q3))
+
+            # Debugging Inputs
+            with st.expander("Show Detailed Input Data"):
+                st.dataframe(input_df_model)
+
         except Exception as e:
-            st.error(f"Prediction failed: {e}")
-            st.stop()
-
-        seg = segment_label(pred, q1, q3)
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Predicted Delivery Time", f"{pred:.1f} min")
-        m2.metric("Risk Segment", seg)
-        m3.metric("Traffic / Weather", f"{traffic} / {weather}")
-
-        st.subheader("Operational Recommendation")
-        st.info(ops_recommendation(pred, q3))
-
-        with st.expander("Show model input (encoded)"):
-            st.dataframe(input_df, use_container_width=True)
-
-        with st.expander("Show model input (after scaling)"):
-            st.dataframe(input_df_model, use_container_width=True)
-
+            st.error(f"Prediction Error: {e}")
     else:
-        st.info("Fill the inputs on the sidebar and click **Predict Delivery Time**.")
+        st.write("👈 Please adjust inputs and click **Predict**.")
