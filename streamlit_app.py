@@ -32,9 +32,9 @@ def load_artifact(path_str: str):
 try:
     artifact = load_artifact(str(artifact_path))
     model = artifact["model"]
-    features = artifact["features"]                 # list kolom final (OHE)
-    scaler = artifact.get("scaler", None)           # scaler training
-    scale_cols = artifact.get("scale_cols", [])     # kolom numerik yang di-scale
+    features = artifact["features"]                  # list kolom final (after OHE)
+    scaler = artifact.get("scaler", None)            # scaler training (optional)
+    scale_cols = artifact.get("scale_cols", [])      # numeric cols scaled in training
 except Exception as e:
     st.error(f"Failed to load artifact: {e}")
     st.stop()
@@ -49,54 +49,67 @@ if isinstance(iqr, dict) and ("q1" in iqr) and ("q3" in iqr):
 else:
     q1, q3 = 41.0, 71.0
 
-RMSE_SHORT  = 3.9   # RMSE untuk prediksi <= 41 menit
-RMSE_MEDIUM = 7.6   # RMSE untuk prediksi 41 - 71 menit
-RMSE_LONG   = 14.2  # RMSE untuk prediksi > 71 menit
+# Segment RMSE (pakai angka hasil evaluasi kamu)
+RMSE_SHORT  = 4.075   # <= 41
+RMSE_MEDIUM = 7.571   # 41 - 71
+RMSE_LONG   = 14.365  # > 71
 
 # ======================
 # Helpers
 # ======================
-def get_prediction_interval(pred_value, q1, q3):
+def get_prediction_interval(pred_value: float, q1: float, q3: float):
     """
-    Menentukan rentang waktu (min-max) berdasarkan segmen error model.
+    Range prediksi berdasarkan error model per segmen.
     """
     if pred_value <= q1:
         margin = RMSE_SHORT
-        segment_name = "Short Duration (High Accuracy)"
-        color = "green"
+        seg = "Fast (High Accuracy)"
+        level = "low"
     elif pred_value <= q3:
         margin = RMSE_MEDIUM
-        segment_name = "Medium Duration (Moderate Accuracy)"
-        color = "orange"
+        seg = "Normal (Moderate Accuracy)"
+        level = "medium"
     else:
         margin = RMSE_LONG
-        segment_name = "Long Duration (Low Accuracy)"
-        color = "red"
-    
-    # Hitung batas bawah (tidak boleh negatif) dan batas atas
-    min_time = max(0, pred_value - margin)
+        seg = "Long Risk (Low Accuracy)"
+        level = "high"
+
+    min_time = max(0.0, pred_value - margin)
     max_time = pred_value + margin
-    
-    return min_time, max_time, segment_name, color
-    
-def ops_recommendation(pred_value, q3_threshold):
+    return min_time, max_time, seg, level
+
+def ops_recommendation(level: str):
     """
-    Provides operational suggestions based on predicted time.
+    Rekomendasi operasional mengikuti insight project:
+    fokus utama = distance & prep time, lalu traffic/weather.
+    batching hanya aman untuk low-risk.
     """
-    if pred_value > q3_threshold:
-        return "⚠️ High Delay Risk: Assign top-rated courier and prioritize route optimization."
-    elif pred_value > 25: # Arbitrary threshold for 'normal'
-        return "ℹ️ Normal Operation: Standard dispatch procedure."
+    if level == "high":
+        return [
+            "High delay risk. Prioritize assigning the closest available courier (distance-first).",
+            "Reduce restaurant waiting time (prep-time control). Dispatch courier when order is near-ready.",
+            "Avoid batching for this order. Do not add extra stops before delivery.",
+            "Send proactive delivery-time updates and use a more conservative ETA."
+        ]
+    elif level == "medium":
+        return [
+            "Moderate risk. Use nearest-courier assignment and monitor preparation status.",
+            "Allow limited batching only if the added stop is very close and does not increase ETA materially.",
+            "Adjust ETA if traffic or weather worsens."
+        ]
     else:
-        return "✅ Fast Delivery: Opportunity to bundle with other nearby orders."
-        
+        return [
+            "Low risk. This order is a good candidate for careful batching with nearby orders.",
+            "Still prioritize short distance assignment and minimize prep delays to keep ETA stable."
+        ]
+
 def build_input_encoded(features, distance, prep, exp, traffic, weather):
     """
-    Build 1-row dataframe with OHE columns matching `features`.
+    Build 1-row dataframe with columns exactly matching `features` (OHE-ready).
     """
     row = {f: 0.0 for f in features}
 
-    # numeric raw (nanti di-scale sesuai scale_cols)
+    # numeric raw (akan di-scale jika scaler ada)
     for col, val in {
         "Distance_km": distance,
         "Preparation_Time_min": prep,
@@ -105,29 +118,27 @@ def build_input_encoded(features, distance, prep, exp, traffic, weather):
         if col in row:
             row[col] = float(val)
 
-    # OHE traffic & weather (harus sesuai nama dummy di training)
+    # OHE (must match training dummy names)
     t_col = f"Traffic_Level_{traffic}"
     w_col = f"Weather_{weather}"
 
     if t_col in row:
         row[t_col] = 1.0
     else:
-        st.warning(f"Traffic dummy not found: {t_col}")
+        # jika training kamu pakai nama beda, ini akan ngasih warning
+        st.warning(f"Traffic dummy not found in features: {t_col}")
 
     if w_col in row:
         row[w_col] = 1.0
     else:
-        st.warning(f"Weather dummy not found: {w_col}")
+        st.warning(f"Weather dummy not found in features: {w_col}")
 
-    df = pd.DataFrame([row])
-
-    # safety: pastikan urutan & kolom sama persis
-    df = df.reindex(columns=features, fill_value=0.0)
+    df = pd.DataFrame([row]).reindex(columns=features, fill_value=0.0)
     return df
 
 def apply_scaling_if_needed(input_df, scaler, scale_cols):
     """
-    Apply scaler from artifact to scale_cols only.
+    Apply scaler TRAINING dari artifact untuk kolom numeric yang memang di-scale saat training.
     """
     if scaler is None or not scale_cols:
         return input_df
@@ -160,56 +171,60 @@ predict_btn = st.sidebar.button("Predict Delivery Time", type="primary")
 colA, colB = st.columns([2, 1])
 
 with colB:
-    st.info(f"""
-    **Segment Thresholds:**
-    - Fast: ≤ {q1:.0f} min
-    - Normal: {q1:.0f} - {q3:.0f} min
-    - Long: > {q3:.0f} min
-    """)
-    
+    st.info(
+        f"**Segment thresholds (IQR):**\n"
+        f"- Fast: ≤ {q1:.0f} min\n"
+        f"- Normal: {q1:.0f}–{q3:.0f} min\n"
+        f"- Long Risk: > {q3:.0f} min"
+    )
+
     with st.expander("Model Debug Info"):
-        st.write(f"Features: {len(features)}")
-        st.write(f"Scaler: {'Loaded' if scaler else 'Missing'}")
-        st.write(f"Scale Cols: {scale_cols}")
+        st.write(f"Artifact path: {artifact_path.name}")
+        st.write(f"Features: {len(features)} columns")
+        st.write(f"Scaler loaded: {'Yes' if scaler is not None else 'No'}")
+        st.write(f"Scale cols: {scale_cols}")
 
 with colA:
     st.subheader("Prediction Result")
 
-    # 1. Build & Scale Input
+    # 1) build encoded input
     input_df = build_input_encoded(features, distance, prep, exp, traffic, weather)
+
+    # 2) apply scaling (if exists)
     input_df_model = apply_scaling_if_needed(input_df, scaler, scale_cols)
 
     if predict_btn:
         try:
-            # 2. Predict
             pred_val = float(model.predict(input_df_model)[0])
-            
-            # 3. Calculate Interval (Range) based on Segments
-            min_t, max_t, seg_name, color_code = get_prediction_interval(pred_val, q1, q3)
-
-            # 4. Display Metrics
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Exact Prediction", f"{pred_val:.1f} min")
-            m2.metric("Estimated Range", f"{min_t:.0f} - {max_t:.0f} min")
-            m3.metric("Segment Type", seg_name.split('(')[0].strip()) # Ambil nama depannya aja
-
-            # 5. Visual Feedback
-            if color_code == "green":
-                st.success(f"Prediction is likely highly accurate (Segment: {seg_name})")
-            elif color_code == "orange":
-                st.warning(f"Prediction has moderate variance (Segment: {seg_name})")
-            else:
-                st.error(f"Prediction is a rough estimate due to high variance (Segment: {seg_name})")
-
-            st.markdown("---")
-            st.markdown("### 📢 Operational Action")
-            st.write(ops_recommendation(pred_val, q3))
-
-            # Debugging Inputs
-            with st.expander("Show Detailed Input Data"):
-                st.dataframe(input_df_model)
-
         except Exception as e:
             st.error(f"Prediction Error: {e}")
+            st.stop()
+
+        # range + segment
+        min_t, max_t, seg_name, level = get_prediction_interval(pred_val, q1, q3)
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Point Prediction", f"{pred_val:.1f} min")
+        m2.metric("Estimated Range", f"{min_t:.0f} – {max_t:.0f} min")
+        m3.metric("Segment", seg_name)
+
+        # feedback box
+        if level == "low":
+            st.success("Low risk. Prediction is typically more stable in this segment.")
+        elif level == "medium":
+            st.warning("Moderate risk. Expect moderate variance; monitor prep status and traffic.")
+        else:
+            st.error("High risk. Long deliveries are harder to predict; treat as a rough estimate.")
+
+        st.markdown("### Operational Actions (Practical)")
+        for bullet in ops_recommendation(level):
+            st.write(f"- {bullet}")
+
+        with st.expander("Show model input (encoded, before scaling)"):
+            st.dataframe(input_df, use_container_width=True)
+
+        with st.expander("Show model input (used by model, after scaling if any)"):
+            st.dataframe(input_df_model, use_container_width=True)
+
     else:
-        st.write("👈 Please adjust inputs and click **Predict**.")
+        st.write("👈 Adjust inputs on the sidebar and click **Predict Delivery Time**.")
