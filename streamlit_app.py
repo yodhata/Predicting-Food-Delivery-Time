@@ -109,7 +109,7 @@ def build_input_encoded(features, distance, prep, exp, traffic, weather):
     """
     row = {f: 0.0 for f in features}
 
-    # numeric raw (akan di-scale jika scaler ada)
+    # numeric raw (memastikan kolom numeric
     for col, val in {
         "Distance_km": distance,
         "Preparation_Time_min": prep,
@@ -118,14 +118,14 @@ def build_input_encoded(features, distance, prep, exp, traffic, weather):
         if col in row:
             row[col] = float(val)
 
-    # OHE (must match training dummy names)
+    # OHE 
     t_col = f"Traffic_Level_{traffic}"
     w_col = f"Weather_{weather}"
 
     if t_col in row:
         row[t_col] = 1.0
     else:
-        # jika training kamu pakai nama beda, ini akan ngasih warning
+        # jika training pakai nama beda, ini akan ngasih warning
         st.warning(f"Traffic dummy not found in features: {t_col}")
 
     if w_col in row:
@@ -143,7 +143,7 @@ def apply_scaling_if_needed(input_df, scaler, scale_cols):
     if scaler is None or not scale_cols:
         return input_df
 
-    cols_exist = [c for c in scale_cols if c in input_df.columns]
+    cols_exist = [c for c in scale_cols if c in input_df.columns] #memastikan featur yang akan di scale ada didalam tabel
     if not cols_exist:
         return input_df
 
